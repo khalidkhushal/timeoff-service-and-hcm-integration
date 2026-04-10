@@ -195,13 +195,13 @@ src/
     balance.module.ts
     balance.controller.ts              Balance query endpoints
     balance.service.ts                 Balance CRUD, sync, pending deduction mgmt
-    balance.service.spec.ts            Unit tests (17)
+    balance.service.spec.ts            Unit tests (18)
     entities/balance.entity.ts         TimeOffBalance entity with optimistic lock
   request/
     request.module.ts
     request.controller.ts              Request lifecycle endpoints
     request.service.ts                 Full lifecycle with async HCM submission
-    request.service.spec.ts            Unit tests (19)
+    request.service.spec.ts            Unit tests (23)
     entities/time-off-request.entity.ts
   hcm/
     hcm.module.ts
