@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
 import { BalanceModule } from './balance/balance.module.js';
 import { RequestModule } from './request/request.module.js';
 import { SyncModule } from './sync/sync.module.js';
@@ -16,6 +17,7 @@ import { SyncLog } from './sync/entities/sync-log.entity.js';
       entities: [TimeOffBalance, TimeOffRequest, SyncLog],
       synchronize: true,
     }),
+    ScheduleModule.forRoot(),
     BalanceModule,
     RequestModule,
     SyncModule,

@@ -3,11 +3,14 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SyncService } from './sync.service.js';
 import { SyncLog, SyncStatus, SyncType } from './entities/sync-log.entity.js';
+import { TimeOffBalance } from '../balance/entities/balance.entity.js';
 import { BalanceService } from '../balance/balance.service.js';
+import { HcmService } from '../hcm/hcm.service.js';
 
 describe('SyncService', () => {
   let service: SyncService;
   let syncLogRepo: jest.Mocked<Repository<SyncLog>>;
+  let balanceRepo: jest.Mocked<Repository<TimeOffBalance>>;
   let balanceService: jest.Mocked<BalanceService>;
 
   const mockSyncLog: SyncLog = {
@@ -22,6 +25,13 @@ describe('SyncService', () => {
   };
 
   beforeEach(async () => {
+    const mockQueryBuilder = {
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([]),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SyncService,
@@ -31,6 +41,13 @@ describe('SyncService', () => {
             find: jest.fn(),
             create: jest.fn().mockImplementation((partial) => ({ ...mockSyncLog, ...partial })),
             save: jest.fn().mockImplementation(async (entity) => entity),
+            delete: jest.fn().mockResolvedValue({ affected: 0 }),
+          },
+        },
+        {
+          provide: getRepositoryToken(TimeOffBalance),
+          useValue: {
+            createQueryBuilder: jest.fn().mockReturnValue(mockQueryBuilder),
           },
         },
         {
@@ -40,11 +57,18 @@ describe('SyncService', () => {
             syncFromHcm: jest.fn(),
           },
         },
+        {
+          provide: HcmService,
+          useValue: {
+            getBalance: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
     service = module.get<SyncService>(SyncService);
     syncLogRepo = module.get(getRepositoryToken(SyncLog));
+    balanceRepo = module.get(getRepositoryToken(TimeOffBalance));
     balanceService = module.get(BalanceService);
   });
 
@@ -140,6 +164,61 @@ describe('SyncService', () => {
         order: { startedAt: 'DESC' },
         take: 10,
       });
+    });
+  });
+
+  describe('scheduledBatchRefresh', () => {
+    it('should skip when no stale balances exist', async () => {
+      const qb = balanceRepo.createQueryBuilder('b');
+      (qb.getRawMany as jest.Mock).mockResolvedValue([]);
+
+      await service.scheduledBatchRefresh();
+      expect(balanceService.syncFromHcm).not.toHaveBeenCalled();
+    });
+
+    it('should sync stale employee-location pairs', async () => {
+      const qb = balanceRepo.createQueryBuilder('b');
+      (qb.getRawMany as jest.Mock).mockResolvedValue([
+        { b_employee_id: 'emp-1', b_location_id: 'loc-1' },
+        { b_employee_id: 'emp-2', b_location_id: 'loc-2' },
+      ]);
+      balanceService.syncFromHcm.mockResolvedValue([]);
+
+      await service.scheduledBatchRefresh();
+      expect(balanceService.syncFromHcm).toHaveBeenCalledTimes(2);
+      expect(balanceService.syncFromHcm).toHaveBeenCalledWith('emp-1', 'loc-1');
+      expect(balanceService.syncFromHcm).toHaveBeenCalledWith('emp-2', 'loc-2');
+    });
+
+    it('should continue syncing other pairs when one fails', async () => {
+      const qb = balanceRepo.createQueryBuilder('b');
+      (qb.getRawMany as jest.Mock).mockResolvedValue([
+        { b_employee_id: 'emp-1', b_location_id: 'loc-1' },
+        { b_employee_id: 'emp-2', b_location_id: 'loc-2' },
+      ]);
+      balanceService.syncFromHcm
+        .mockRejectedValueOnce(new Error('HCM down'))
+        .mockResolvedValueOnce([]);
+
+      await service.scheduledBatchRefresh();
+      expect(balanceService.syncFromHcm).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('cleanupOldSyncLogs', () => {
+    it('should delete logs older than 90 days', async () => {
+      syncLogRepo.delete.mockResolvedValue({ affected: 5, raw: {} });
+
+      const deleted = await service.cleanupOldSyncLogs();
+      expect(deleted).toBe(5);
+      expect(syncLogRepo.delete).toHaveBeenCalled();
+    });
+
+    it('should return 0 when no old logs exist', async () => {
+      syncLogRepo.delete.mockResolvedValue({ affected: 0, raw: {} });
+
+      const deleted = await service.cleanupOldSyncLogs();
+      expect(deleted).toBe(0);
     });
   });
 });

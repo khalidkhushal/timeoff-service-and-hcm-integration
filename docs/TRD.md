@@ -70,6 +70,8 @@ ExampleHR provides a user-friendly interface for time-off requests, but the HCM 
 | Submit approved requests to HCM and handle all response scenarios | P0 |
 | Maintain an audit log of sync operations | P1 |
 | Defensive local validation before HCM submission | P0 |
+| Scheduled hourly refresh of stale balances from HCM | P1 |
+| Automated cleanup of sync logs older than 90 days | P2 |
 
 ---
 
@@ -120,6 +122,7 @@ Network failures during HCM submission may leave us uncertain about whether the 
 - **Runtime:** Node.js with NestJS framework
 - **Database:** SQLite via TypeORM
 - **HTTP Client:** Axios (via NestJS HttpModule)
+- **Scheduling:** @nestjs/schedule (cron-based jobs)
 - **Testing:** Jest with Supertest for e2e, built-in NestJS testing utilities
 - **Validation:** class-validator + class-transformer
 
@@ -365,7 +368,18 @@ When a batch sync arrives:
 2. We **do not reset** `pending_deductions` — those represent locally-approved requests not yet confirmed by HCM.
 3. If the new HCM balance minus existing pending deductions goes negative, we flag a **sync conflict** in the sync log and optionally trigger a review.
 
-### 8.4 Idempotency
+### 8.4 Scheduled Jobs
+
+The microservice runs two cron-based scheduled tasks via `@nestjs/schedule`:
+
+| Schedule | Job | Purpose |
+|---|---|---|
+| **Every hour** | `scheduledBatchRefresh` | Queries all balance records where `last_synced_at` is older than 1 hour (or NULL). For each stale employee-location pair, calls the HCM real-time API to refresh the balance. This proactively catches external balance changes (anniversary bonuses, annual resets, manual HR adjustments) without waiting for the next batch push or a user-triggered refresh. |
+| **Every day at midnight** | `cleanupOldSyncLogs` | Deletes `sync_log` entries older than 90 days to keep the audit trail manageable and prevent unbounded table growth. |
+
+Both jobs are resilient — a failure syncing one employee-location pair does not block the remaining pairs, and cleanup failures are logged but do not affect service operation.
+
+### 8.5 Idempotency
 
 Every time-off request carries a client-generated `idempotency_key`. This key is:
 - Stored in the database with a unique constraint
@@ -556,7 +570,8 @@ A real HTTP server (using Express or NestJS) that simulates HCM behavior:
 | Database | SQLite (single-file, zero-config) |
 | Concurrent requests | Handled via optimistic locking |
 | Retry policy (HCM submission) | Exponential backoff, max 3 attempts |
-| Sync log retention | 90 days |
+| Scheduled balance refresh | Every hour (stale balances > 1h) |
+| Sync log retention | 90 days (auto-cleaned nightly) |
 
 ---
 
